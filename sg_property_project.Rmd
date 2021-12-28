@@ -1,0 +1,781 @@
+---
+title: "Predictive Analysis Project of Singapore Resale Condominums"
+subtitle: "Data Science Machine Learning Regression Project"
+author: "Marcus Tay"
+date: "24 December 2021"
+output:
+  html_document:              
+    prettydoc::html_pretty:
+      theme: architect
+    highlight: espresso
+    # css: styles.css
+    # latex_engine: xelatex
+    # mainfont: Calibri Light
+    toc: yes
+    toc_float: 
+      collapsed: false
+      smooth_scroll: false
+    number_sections: false
+---
+
+<div class="watermark">MARCUS TAY <br>SG PROPERTY PROJECT</div>
+
+```{r setup, include=F}
+# Global Setting - unless specified otherwise in other code chunks, this will be the rule.
+knitr::opts_chunk$set(echo = T, 
+                      warning = F, 
+                      message = F,
+                      cache = T,
+                      dpi = 600, 
+                      fig.width = 10, 
+                      fig.height = 6, 
+                      fig.align = "center")
+```
+
+```{css, echo = F}
+h1 { color: rgb(62, 6, 148); }
+h2 { color: rgb(0, 104, 139); } 
+h3 { color: rgb(51, 122, 183); }
+
+body {font-family:  -apple-system, BlinkMacSystemFont,
+                    "Segoe UI", Roboto, Ubuntu;
+      font-size: 12pt; }
+
+body {font-family:  -apple-system, BlinkMacSystemFont, 
+                    "Segoe UI", Roboto, Ubuntu;
+      font-size: 12pt; }
+
+code { color: rgb(205,79,57) }
+
+.watermark {
+  opacity: 0.1;
+  position: fixed;
+  top = 50%;
+  left = 50%;
+  font-size: 400%;
+  color: #00407d;
+    }
+
+.tocify-extend-page {height: 0 !important; } 
+```
+
+## 1. Business Question
+
+> On December 15 2021, the Government of Singapore announced a set of measures intended to cool the private residential and HDB resale markets. According to the press release by the Ministry of National Development, [Additional Buyer's Stamp Duty (ABSD) has been increased](https://www.mnd.gov.sg/newsroom/press-releases/view/measures-to-cool-the-property-market) to restrain speculative investments in the property market. Tightened financing conditions have also been introduced to encourage greater financial prudence in the property market in light of [rising housing debts](https://www.todayonline.com/singapore/mas-urges-homebuyers-exercise-prudence-housing-loans-drive-increase-household-debt).
+
+> These measures come at a time when the market has remained bullish despite the economic impacts of the COVID-19. The total number of [million-dollar transactions for HDB resale flats in the year to date (09 Dec 2021) to 223, which is 209.7% higher when compared to the same period last year](https://www.businesstimes.com.sg/real-estate/hdb-resale-prices-transaction-volumes-see-continued-growth-in-november-srx). Private property prices has also [risen quarter on quarter in 2021](https://www.straitstimes.com/business/property/singapore-private-home-prices-rise-11-in-q3-led-by-landed-properties).
+
+> At a time like this, buyers have adopted a "wait-and-see" approach. Such approach is a clear indicator of uncertainty in home prices. Hence, I sought to *use data science tools to execute a predictive regression model* by leveraging on available data provided by the Urban Redevelopment Authority (URA) to predict individual resale condominium prices.
+
+## 2. Import
+
+> Load packages
+
+```{r Load Package}
+pacman::p_load(tidyverse, lubridate, 
+               tidymodels, 
+               skimr, GGally, ggstatsplot,
+               usemodels, doParallel, vip, 
+               shiny, shinydashboard, DT, 
+               ggthemes, ggthemr, plotly,
+               Hmisc, broom, janitor)
+```
+
+> Data was sourced from [URA](https://www.ura.gov.sg/realEstateIIWeb/transaction/search.action)
+
+Variable (Feature) Name   | Description
+:-------------------------|:----------------------------------------------------
+`price($)`                | Price of the unit
+S/N                       | Serial number
+Project Name              | Name of the development the unit is in
+Street Name               | Street name / Address of the unit
+Type                      | "Condominium", "Apartment"
+Postal District           | District that the unit is under
+Market Segment            | "CCR" (Core central region), "RCR" (Rest of central region), "OCR" (Outside central region)
+Tenure                    | 99-years leasehold, 999-years leasehold or freehold, based on the build date of the development
+Type of Sale              | "Resale"
+No. of Units              | "1"
+Nett Price                | "-"
+Area (Sqft)               | Area of unit in square feet
+Type of Area              | "Strata"
+Floor Level               | Range of floors (by levels of 5) of the unit
+Unit Price ($psf)         | Per Square Foot (PSF) price of unit
+Date of Sale              | Date that the property was transacted
+      
+
+```{r Import Data}
+files <- dir(pattern = "d.+.csv")
+
+property <- files %>%  #setwd before running
+  purrr::map(read_csv) %>% 
+  reduce(rbind)
+```
+
+```{r Data table}
+property %>% 
+  datatable(options = list(scrollX = T))
+```  
+
+## 3. Transform & EDA
+
+```{r}
+# skim(property) 
+
+# property %>% 
+#   count(`Project Name`) %>%
+#   arrange(desc(n)) %>% 
+#   print(n = nrow(.))
+```
+
+```{r Transform Data}
+
+## Change certain character variables to factor
+
+glimpse(property)
+
+property <- property %>% 
+  mutate_if(is.character, as.factor) %>% 
+  mutate(log10_price = log10(`Price ($)`))
+```
+
+```{r Check Transformed Data}
+# skim(property)
+```
+
+### 3.1 Exploratory Data Analysis {.tabset}
+
+> We will first conduct multi-variate analysis to understand the correlation between variables.
+
+```{r Apply theme}
+ggthemr::ggthemr("flat dark")
+```
+
+#### 3.1.1 Volume x District
+
+> The top 3 districts with highest number of resale units in 2021 were districts 10, 15, and 19. Note: Some districts are split into two different regions (e.g. part OCR and part RCR).
+
+```{r Number of transactions by district}
+property %>% 
+  ggplot(aes(x = `Postal District`, fill = `Market Segment`)) +
+         geom_bar() +
+  scale_x_continuous(breaks = 1:28) + 
+  scale_y_continuous(breaks = seq(0,2000,400)) +
+  labs(title = "A Comparison of Resale Property Transactions by Districts.",
+       caption = "Source: 'd1-d28.csv' dataset",
+       x = "Postal District",
+       y = "The Number of Properties Sold") +
+  annotate(geom = "text",
+           label = "Tanglin, Bukit Timah, Holland",
+           x = 10,
+           y = 1150,
+           size = 3) +
+  annotate(geom = "text",
+           label = "Tanjong Rhu, Amber, Meyer, Katong,\nDunman, Joo Chiat, Marine Parade (RCR);\nTelok Kurau, Siglap, Frankel (OCR)",
+           x = 15,
+           y = 1650,
+           size = 2.5) +
+  annotate(geom = "text",
+           label = "Punggol, Sengkang, Hougang,\nKovan, Serangoon, Lorong Ah Soo",
+           x = 19,
+           y = 1850,
+           size = 2.5) +
+  scale_fill_discrete(name="Region",
+                      breaks=c("CCR", "OCR", "RCR"),
+                      labels=c("Core Central Region", "Outside Central Region", "Rest of Central Region"))
+```
+
+#### 3.1.2 Avg Price x District
+
+> District 6 has a vastly high average resale price. Further analysis shows that this is due to an exclusive luxury condominium (Eden Residences Capitol) with high resale prices accounting for the only sale transactions occuring within the district the past year.
+
+```{r Average Resale Price by District}
+property %>%
+  select(`Postal District`, `Price ($)`) %>% 
+  group_by(`Postal District`) %>% 
+  dplyr::summarize(cases = n(),
+                   totalprice = sum(`Price ($)`)) %>% 
+  mutate(avgprice = totalprice/cases) %>% 
+  drop_na() %>% 
+  ggplot(aes(x = reorder(`Postal District`, avgprice), y = avgprice)) +
+  geom_col() +
+  geom_text(aes(label = round(avgprice)), size = 4, hjust = 1) +
+  scale_y_continuous(breaks = seq(0, 12e6, 2e6),
+                     labels = scales::dollar_format(scale = 1)) +
+  labs(title = "A Comparison of Average Resale Prices by Districts.",
+       caption = "Source: 'd1-d28.csv' dataset",
+       x = "Postal District",
+       y = "Average Property Price") +
+  coord_flip()
+```
+
+#### 3.1.3 Avg PSF x District
+
+> District 6 has a vastly high average PSF price due to an exclusive luxury condominium (Eden Residences Capitol) accounting for the only few sale transactions occuring within the district the past year.
+
+```{r Average PSF Price by District}
+property %>%
+  select(`Postal District`, `Unit Price ($psf)`) %>% 
+  group_by(`Postal District`) %>% 
+  dplyr::summarize(cases = n(),
+                   totalpsf = sum(`Unit Price ($psf)`)) %>% 
+  mutate(avgpsf = totalpsf/cases) %>% 
+  drop_na() %>% 
+  ggplot(aes(x = reorder(`Postal District`, avgpsf), y = avgpsf)) +
+  geom_col() +
+  geom_text(aes(label = round(avgpsf)), size = 4, hjust = -0.5) +
+  scale_y_continuous(breaks = seq(0, 4e3, 5e2),
+                     labels = scales::dollar_format(scale = 1)) +
+  labs(title = "A Comparison of Average Resale PSF Prices by Districts.",
+       caption = "Source: 'd1-d28.csv' dataset",
+       x = "Postal District",
+       y = "Average PSF Price") +
+  coord_flip()
+```
+
+#### 3.1.4 Price x Volume x Type
+
+> There were double the number of resale condomiums transacted in the past year as compared to apartments. The average selling price of both types of properties were similar.
+
+```{r Avg Price and Volume by Unit Type}
+property %>% 
+  select(Type,`Price ($)`) %>% 
+  group_by(Type) %>% 
+  dplyr::summarize(volume = n(),
+                   totalprice = sum(`Price ($)`)) %>% 
+  drop_na() %>% 
+  mutate(avgprice = totalprice/volume) %>% 
+  ggplot(aes(x = Type, y = avgprice)) +
+  geom_col(width = 0.4) +
+  geom_text(aes(label = paste(volume,"units sold"), vjust = -1)) +
+  scale_y_continuous(breaks = seq(0, 2e6, 5e5),
+                     labels = scales::dollar_format(scale = 1)) +
+  labs(title = "A Comparison of Average Price and Volume Transacted Between Apartment and Condominium.",
+       caption = "Source: 'd1-d28.csv' dataset",
+       x = "Property Type",
+       y = "Average Property Price")
+```
+
+#### 3.1.5 Floor Level x Avg Prices
+
+```{r Average Prices by Floor Level}
+property %>% 
+  select(`Floor Level`, `Price ($)`) %>% 
+  group_by(`Floor Level`) %>% 
+  dplyr::summarise(n = n(),
+                   totalprice = sum(`Price ($)`)) %>% 
+  mutate(avgprice = totalprice/n) %>% 
+  filter(`Floor Level` != "-") %>% 
+  ggplot(aes(x = `Floor Level`, y = avgprice)) +
+  scale_y_continuous(labels =  scales::dollar_format(scale = 1)) +
+  geom_col() +
+  labs(title = "A Comparison of Average Unit Price by Floor Level Range") +
+  coord_flip()
+```
+### {-}
+
+### 3.2 Correlation Study {.tabset}
+
+> We further clean the dataset and remove spaces from variable names.
+
+```{r Further clean dataset}
+property <- property %>% 
+  mutate_if(is.character, as.factor) %>% 
+  mutate(log10_price = log10(`Price ($)`)) %>% 
+  rename_with(~ tolower(gsub(" ", "_", .x, fixed = TRUE))) %>% 
+  select(c(-`price_($)`, -`nett_price_($)`, -street_name,-type,-type_of_sale,
+           -no._of_units, -type_of_area, -`unit_price_($psf)`, -date_of_sale)) %>% 
+  drop_na()
+```
+
+
+```{r Reciped for EDA}
+reciped_for_EDA <- recipe(formula = log10_price ~ .,
+                          data = property) %>% 
+  step_rm(`s/n`) %>% 
+  step_impute_knn(all_predictors()) %>% 
+  step_other(project_name, threshold = 0.02) %>% 
+  step_normalize(all_numeric_predictors()) %>% 
+  step_dummy(all_nominal_predictors())
+  
+
+baked_for_EDA <- reciped_for_EDA %>% 
+  prep() %>% 
+  bake(new_data = property)
+```
+
+#### Scatter Plot
+
+```{r Scatter Plot}
+baked_for_EDA %>%
+  select(log10_price, `area_(sqft)`) %>%
+  ggpairs()
+```
+
+#### Correlation Matrix
+
+```{r Correlation Matrix}
+baked_for_EDA %>% 
+  as.matrix(.) %>% 
+  rcorr(.) %>% 
+  tidy(.) %>% 
+  mutate(absolute_corr = abs(estimate)
+  ) %>% 
+  filter(absolute_corr > 0.10) %>% 
+  rename(variable1 = column1,
+         variable2 = column2,
+         corr = estimate) %>% 
+  filter(variable1 == "log10_price" | variable2 == "log10_price") %>% 
+  datatable()
+```
+### {-}
+
+## 4. Predictive Model
+
+> Two recipes were prepared for the predictive model. The first includes variables with stronger correlation (postal_district, market_segment, tenure, area_(sqft) and floor_level), while the second adopts a more streamlined approach, focusing only on three of the five variables in Model A (postal_district, area_(sqft) and tenure).
+
+> These two recipes were fitted on two algorithms: Linear Regression and Random Forest, resulting in four predictive models.
+
+### 4.1. Split
+
+> Preparation
+
+```{r}
+set.seed(21121)
+
+property_split <- property %>% 
+  initial_split()
+```
+
+> Execution
+
+```{r}
+property_training <- training(property_split)
+property_testing <- testing(property_split)
+```
+
+### 4.2. Pre-Procesing
+
+> Feature Engineering
+
+```{r}
+names(property_training)
+
+reciped_A <- recipe(formula = log10_price ~ postal_district + market_segment + 
+                      tenure + `area_(sqft)` + floor_level,
+                    data = property_training) %>% 
+  step_impute_knn(all_predictors()) %>% 
+  step_normalize(all_numeric_predictors()) %>% 
+  step_dummy(all_nominal_predictors())
+
+baked_A <- reciped_A %>% 
+  prep() %>% 
+  bake(new_data = property_training)
+
+reciped_B <- recipe(formula = log10_price ~ postal_district + `area_(sqft)` + tenure,
+                    data = property_training) %>% 
+  step_impute_knn(all_predictors()) %>% 
+  step_normalize(all_numeric_predictors()) %>% 
+  step_dummy(all_nominal_predictors())
+
+baked_B <- reciped_B %>% 
+  prep() %>% 
+  bake(new_data = property_training)
+```
+
+### 4.3. Fit
+
+```{r}
+# Linear Regression
+property_linear <- linear_reg() %>% 
+  set_engine('lm') %>% 
+  set_mode("regression")
+
+# Random Forest Algorithm
+property_RF <- rand_forest() %>% 
+  set_engine("ranger",
+             importance = "permutation") %>% 
+  set_mode("regression") %>% 
+  set_args(mtry = tune(),
+           min_n = tune(),
+           trees = 1000)
+```
+
+### 4.4. Tune
+
+> Using `workflows::``workflow()`
+
+```{r}
+library(workflows)
+
+workflow_LINEAR_A <- workflow() %>% 
+  add_recipe(reciped_A) %>% 
+  add_model(property_linear)
+
+workflow_LINEAR_B <- workflow() %>% 
+  add_recipe(reciped_B) %>% 
+  add_model(property_linear)
+
+workflow_RF_A <- workflow() %>% 
+  add_recipe(reciped_A) %>% 
+  add_model(property_RF)
+
+workflow_RF_B <- workflow() %>% 
+  add_recipe(reciped_B) %>% 
+  add_model(property_RF)
+```
+
+> Cross-validation (cv)
+
+```{r}
+set.seed(21122)
+
+cv10 <- vfold_cv(property_training, v = 10)
+
+cv10
+```
+
+> Parallel Processing for Speedy Computation
+
+```{r}
+# sessionInfo()
+
+registerDoParallel()
+
+set.seed(21123)
+tuned_LINEAR_A <- workflow_LINEAR_A %>% 
+  tune_grid(resamples = cv10)
+
+set.seed(21124)
+tuned_LINEAR_B <- workflow_LINEAR_B %>% 
+  tune_grid(resamples = cv10)
+
+set.seed(21125)
+tuned_RF_A <- workflow_RF_B %>% 
+  tune_grid(resamples = cv10,
+            grid = 2:4)
+
+set.seed(21126)
+tuned_RF_B <- workflow_RF_B %>% 
+  tune_grid(resamples = cv10,
+            grid = 2:4)
+```
+
+> Check out the best-performing models in the tuning results
+
+```{r Best Model}
+tuned_LINEAR_A %>% 
+  collect_metrics(metric = "rmse")
+
+tuned_LINEAR_B %>% 
+  collect_metrics(metric = "rmse")
+
+tuned_RF_A %>% 
+  collect_metrics(metric = "rmse")
+
+tuned_RF_B %>% 
+  collect_metrics(metric = "rmse")
+
+parameters_tuned_RF_A <- tuned_RF_A %>% 
+  select_best(metric = "rmse")
+
+parameters_tuned_RF_B <- tuned_RF_B %>% 
+  select_best(metric = "rmse")
+```
+
+> How did all the possible parameter combinations perform? 
+
+```{r}
+plot_tuned_RF_A <- tuned_RF_A %>% 
+  autoplot()
+
+plot_tuned_RF_B <- tuned_RF_B %>% 
+  autoplot()
+
+ggthemr::ggthemr("flat dark")
+gridExtra::grid.arrange(plot_tuned_RF_A,
+                        plot_tuned_RF_B,
+                        ncol = 2)
+```
+
+
+```{r Finalizing the workflow}
+finalized_workflow_RF_A <- workflow_RF_A %>% 
+  finalize_workflow(parameters_tuned_RF_A)
+
+finalized_workflow_RF_B <- workflow_RF_B %>% 
+  finalize_workflow(parameters_tuned_RF_B)
+```
+
+### 4.5. Assess
+
+```{r Fit final trained model}
+# Linear Regression
+fit_LINEAR_A <- workflow_LINEAR_A %>% 
+  last_fit(property_split)
+
+fit_LINEAR_B <- workflow_LINEAR_B %>% 
+  last_fit(property_split)
+
+# RF
+fit_RF_A <- finalized_workflow_RF_A %>% 
+  last_fit(property_split)
+
+fit_RF_B <- finalized_workflow_RF_B %>% 
+  last_fit(property_split)
+```
+
+> Model Performance Comparison
+
+```{r}
+performance_LINEAR_A <- fit_LINEAR_A %>% 
+  collect_metrics() %>% 
+  mutate(Algorithm = "Linear Regression with Feature Set A")
+
+performance_LINEAR_B <- fit_LINEAR_B %>% 
+  collect_metrics() %>% 
+  mutate(Algorithm = "Linear Regression with Feature Set B")
+
+
+performance_RF_A <- fit_RF_A %>% 
+  collect_metrics() %>% 
+  mutate(Algorithm = "Random Forest with Feature Set A")
+
+
+performance_RF_B <- fit_RF_B %>% 
+  collect_metrics() %>% 
+  mutate(Algorithm = "Random Forest with Feature Set B")
+
+performance_comparisons <- bind_rows(performance_LINEAR_A,
+                                     performance_LINEAR_B,
+                                     performance_RF_A,
+                                     performance_RF_B)
+
+# Clean up the table and tidy the columns for reporting
+performance_comparisons %>% 
+  select(-.estimator,
+         -.config) %>% 
+  pivot_wider(names_from = .metric,
+              values_from = .estimate) %>% 
+  datatable() %>% 
+  formatRound(columns = c("rmse", "rsq"),
+              digits = 3)
+```
+> Null Model Comparison
+
+```{r}
+model_BASELINE <- null_model() %>%
+  set_engine("parsnip") %>%
+  set_mode("regression")
+
+workflow_BASELINE_A <- workflow() %>%
+  add_recipe(reciped_A) %>%
+  add_model(model_BASELINE) %>%
+  fit_resamples(cv10,
+                metrics = metric_set(rmse)
+                )
+
+workflow_BASELINE_B <- workflow() %>%
+  add_recipe(reciped_B) %>%
+  add_model(model_BASELINE) %>%
+  fit_resamples(cv10,
+                metrics = metric_set(rmse)
+                )
+```
+
+> Results from the null model, in terms of performance metrics
+
+```{r}
+workflow_BASELINE_A %>% collect_metrics()
+```
+
+```{r}
+workflow_BASELINE_B %>% collect_metrics()
+```
+
+### 4.6. Post-processing
+
+> Individual Unit Resale Price Predictions
+
+```{r}
+predictions_RF_B <- fit_RF_B %>% 
+  collect_predictions()
+
+ggthemr("flat dark")
+predictions_RF_B %>% 
+  ggplot(aes(x = log10_price, y = .pred)
+  ) +
+  geom_abline(lty = 1,
+              color = "red",
+              size = 2) +
+  geom_point(alpha = 0.20,
+             color = "green") +
+  coord_fixed() +
+  labs(x = "Actual Unit Resale Price",
+       y = "Predicted Unit Resale Price",
+       title = "Predicting Singapore Condo Resale Price")
+
+for_naming <- property_testing %>% 
+  select(`s/n`, project_name) %>% 
+  mutate(serialnum = as.numeric(as.character(`s/n`)))
+
+for_naming
+
+prediction_results_with_names <- predictions_RF_B %>% 
+  rename(serialnum = .row) %>% 
+  inner_join(for_naming, by = "serialnum") %>% 
+  mutate(`Actual Price` = 10^log10_price, #Post-processing
+         `Predicted Price` = 10^.pred)
+
+ggplot_prices <- prediction_results_with_names %>% 
+  ggplot(aes(x = `Actual Price`,
+             y = `Predicted Price`,
+             label = project_name,
+             text = serialnum)
+  ) +
+  geom_abline(lty = 1,
+              color = "red",
+              size = 2) +
+  geom_point(alpha =0.2,
+             color = "deepskyblue") +
+  scale_x_continuous(labels = scales::dollar_format(),
+                     breaks = seq(0, 12e7, 2e6)
+  ) +
+  scale_y_continuous(labels = scales::dollar_format(),
+                     breaks = seq(0, 12e7, 2e6)
+  ) +
+  labs(x = "Actual Unit Resale Price (SGD)",
+       y = "Predicted Unit Resale Price (SGD)",
+       title = "Predicting Singapore Condo Rental Price") +
+  theme(axis.title = element_text()
+  )
+
+ggplot_prices %>% 
+  ggplotly(width = 1000, height = 800)
+```
+
+> Feature Importance
+
+```{r}
+library(vip)
+
+finalized_model_property <- workflow_RF_B %>% 
+  fit(property) # Ultimate Model
+
+feature_importance <- property_RF %>% 
+  finalize_model(select_best(tuned_RF_B)
+  ) %>% 
+  set_engine("ranger",
+             importance = "permutation")
+
+summary_model <- workflow() %>% 
+  add_recipe(reciped_B) %>% 
+  add_model(feature_importance) %>% 
+  fit(property_training) %>% 
+  pull_workflow_fit() %>% 
+  vip(aesthetics = list(alpha = 0.70,
+                        fill = "tomato3")
+  )
+
+summary_model +
+  labs(title = "Feature Importance\nof Predicting Singapore Condo Resale Price")
+```
+
+> Deploy Machine Learning Algorithm to Dashboard
+
+```{r}
+finalized_model_property %>% saveRDS("finalized_property_model.rds")
+```
+
+> Save R Data 
+
+```{r}
+save.image("sg_property_project.RData")
+```
+
+## 5. Executive Summary
+
+### 5.1. Evidence
+
+* I tested 4 models for this predictive modeling task.
+
+* Based on the correlation analysis of all variables, **postal district**, **market segment**, **tenure**, **area (size)** and **floor level** had the strongest impact on resale price. 
+
+* My first model `Linear Regression Algorithm A` focused on these 5 variables.
+
+* Based on variable importance graph, the top three variables that had the highest importance on the prediction results are **postal district**, **tenure** and **area (size)**.
+
+
+* The second model `Linear Regression Algorithm B` adopted a more streamlined approach and took in these 3 variables in an attempt to improve overall performance. For both recipes, I ensured that I used KNN to impute any missing observations, and also normalized the numeric predictors and created dummy variables for nominal predictors.
+
+* Based on the two recipes above, we attempted to use the same variables with the computation method of Random Forest to improve the model performance.
+
+* Of the 4 models, the third model `Random Forest Algorithm A` performed better with lower RMSE of **0.05** and higher $R^2$ of **0.95**, compared to the other three models.
+
+### 5.2. Interpretation
+
+* `Random Forest Algorithm A` performed better overall with a RMSE of **0.05** and $R^2$ of **0.95**.
+
+* The model focused on the top 5 most correlated variables to resale price based on the correlation study, and these variables are also the most important features according to the variable importance graph.
+
+* This implies the significance of focusing on the most important features during the predictive modelling task, and also proper reformatting of features to achieve optimal performance.
+
+* In terms of variable importance, the top 3 variables are postal district, area, and tenure.
+
+### 5.3. Recommendations
+
+* The key application of this predictive model is in determining the price of a resale condominium/apartment based on accessible factors of the property and the region the development is situated at. Hence, the key stakeholders who will benefit the most from this predictive model are `(1) home buyers`, `(2) property investors` and `(3) property agents / firms`.
+
+* This algorithm takes into account the 5 most important variables to produce a evidence-based prediction of the resale price of a condo. For `home buyers and sellers` and `property investors`, this predictive model is a useful data tool that can be used in conjunction with qualitative checks on the specific unit and the surroundings of the development, conducted during property viewing. This would help them make **more accurate offers** for the property of interest. 
+
+* One of the drivers for this predictive model study was the recent [introduction of cooling measures in Singapore](https://www.mnd.gov.sg/newsroom/press-releases/view/measures-to-cool-the-property-market) leading to uncertainty in the market, especially for investors. This tool aims to help alleviate such unpredictability.
+
+* Furthermore, as we are in a [seller's market (bull market)](https://www.youtube.com/watch?v=OLKNCE5r-7g&list=PLYIHyr0q2nW-bDN_W5HV6OHVCjQvWW4ro&index=8&ab_channel=PropertyLimBrothers), there is higher demand and lower inventory of properties. This increases the occurrence of sellers listing properties at a much higher price than the current market value, thus potentially leading to misrepresented prices. The increasing [use of advertising cliches](https://www.99.co/singapore/insider/5-property-marketing-cliches-were-tired-of-hearing/) on real estate websites further creates another layer of difficulty for non-savvy home seekers. This predictive model aims to help mitigate that and prevent such people from overpaying for their property.
+
+* All in all, it is recommended that this prediction model be **made openly available to public to access and input the details of their property of interest** to arrive at a predicted resale price of a unit. It is recommended that property seekers in Singapore use this tool in conjunction with on-site assessments of the property of interest to determine a fair price of the unit.
+
+## Limitations
+
+* This study applies to the property market in Singapore only, and specifically to private condominiums/apartments. This study can, however, be replicated for HDB and/or commercial projects. 
+
+* This model is easy and accessible for the public to use as it takes into account variables that are easily obtained online. However, the data set lacks other salient features that predicts property prices, such as distance to MRT, or more qualitative factors such as nearby amenities.
+
+* The model is based on property prices in 2021. External influences (such as en blocs) and policy changes are also not taken into account. Predictions could thus be made less accurate due to these factors.
+
+## References
+
+* [Data set from URA](https://www.ura.gov.sg/realEstateIIWeb/transaction/search.action)
+
+* [2021 Cooling measures in Singapore](https://www.mnd.gov.sg/newsroom/press-releases/view/measures-to-cool-the-property-market)
+
+* [Rising housing debts 2021](https://www.todayonline.com/singapore/mas-urges-homebuyers-exercise-prudence-housing-loans-drive-increase-household-debt)
+
+* [Million-dollar HDB transactions](https://www.businesstimes.com.sg/real-estate/hdb-resale-prices-transaction-volumes-see-continued-growth-in-november-srx)
+
+* [Private property quarter on quarter price rise in 2021](https://www.straitstimes.com/business/property/singapore-private-home-prices-rise-11-in-q3-led-by-landed-properties)
+
+* [Seller's market (bull market)](https://www.youtube.com/watch?v=OLKNCE5r-7g&list=PLYIHyr0q2nW-bDN_W5HV6OHVCjQvWW4ro&index=8&ab_channel=PropertyLimBrothers)
+
+* [Use of advertising cliches](https://www.99.co/singapore/insider/5-property-marketing-cliches-were-tired-of-hearing/)
+
+## Appendix
+
+* Nil.
+
+## Contribution Statement
+
+> This project was delivered by Marcus. An **R-script** was created to set the workflow and test difference recipes and models. The **R-markdown** was then produced to deliver the final reproducible report in html format.
+  
+>  `Marcus's` contributions:
+
+1) Developed the R-script – Transform & EDA, Split, Pre-process, Fit, Tune and Assess.
+
+2) Tested and found the best recipe and model with lowest RMSE score.
+
+3) Transformed and analyzed the dataset to identify features correlated to target variable.
+
+4) Wrote the Business Question, Executive Summary – Evidence, Interpretation and Recommendations.
+
+5) Produced the Rmarkdown file.
+
+
+<br>
